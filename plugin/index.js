@@ -9,7 +9,7 @@ class ServerlessSecrets {
     this.serverless = serverless
     this.options = options
     this.deployMode = false
-    this.config = this.generateConfig()
+    this.config = null
 
     // todo figure out what needs to be extracted to another file to support multiprovider CLI
     this.commands = {
@@ -111,7 +111,6 @@ class ServerlessSecrets {
       'secrets:list-remote:list-remote': this.listRemoteSecretNames.bind(this),
       'secrets:validate:validate': this.validateSecrets.bind(this),
       'before:package:setupProviderConfiguration': this.setIamPermissions.bind(this),
-      'before:package:initialize': this.setEnvironmentConfig.bind(this),
       'before:package:createDeploymentArtifacts': this.packageSecrets.bind(this),
       'after:package:createDeploymentArtifacts': this.cleanupPackageSecrets.bind(this),
       'before:deploy:function:packageFunction': this.packageSecrets.bind(this),
@@ -125,7 +124,7 @@ class ServerlessSecrets {
   }
 
   getStorageProvider () {
-    const providerOptions = this.config.options.providerOptions || {}
+    const providerOptions = this.getConfig().options.providerOptions || {}
 
     // region flag overrides configuration only when not deploying
     if (!this.deployMode && this.options.region) providerOptions.region = this.options.region
@@ -145,7 +144,7 @@ class ServerlessSecrets {
   }
 
   skipValidation () {
-    return this.options.skipValidation || this.config.options.skipValidation || _.get(this.serverless.service, 'custom.serverlessSecrets.skipValidation', false)
+    return this.options.skipValidation || this.getConfig().options.skipValidation || _.get(this.serverless.service, 'custom.serverlessSecrets.skipValidation', false)
   }
 
   setSecret () {
@@ -159,10 +158,10 @@ class ServerlessSecrets {
     }
 
     let defaultKey, customKey
-    if (this.config.options.keys) {
-      defaultKey = this.config.options.keys.default
+    if (this.getConfig().options.keys) {
+      defaultKey = this.getConfig().options.keys.default
       if (this.options.key) {
-        customKey = this.config.options.keys[this.options.key]
+        customKey = this.getConfig().options.keys[this.options.key]
       }
     }
 
@@ -231,56 +230,57 @@ class ServerlessSecrets {
       .then(() => this.setAdditionalEnvironmentVariables())
   }
 
-  generateConfig () {
-    this.serverless.cli.log('Generating Serverless Secrets Config options')
-    if (!this.serverless.service.provider.name) {
-      throw new Error('No provider name configured in serverless.yml')
-    }
-
-    // build options object
-    const options = Object.assign(
-      {
-        throwOnMissingSecret: false,
-        logOnMissingSecret: true,
-        skipValidation: false,
-        omitPermissions: false,
-        resourceForIamRole: '*'
-      },
-      _.get(this.serverless.service, 'custom.serverlessSecrets', {}),
-      {
-        provider: this.serverless.service.provider.name
+  getConfig () {
+    if(!this.config) {
+      this.serverless.cli.log('Generating Serverless Secrets Config options')
+      if (!this.serverless.service.provider.name) {
+        throw new Error('No provider name configured in serverless.yml')
       }
-    )
 
-      return {
-          options
-      }
-  }
-
-  setEnvironmentConfig() {
-    this.config.environments = this.generateEnvironmentConfig()
-  }
-
-  generateEnvironmentConfig () {
-    this.serverless.cli.log('Generating Serverless Secrets Config environments')
-    const functions = this.serverless.service.functions
-    const environments = Object.keys(functions)
-      .reduce((environments, key) => {
-        const functionName = functions[key].name || [this.serverless.service.service, this.serverless.processedInput.options.stage, key].join('-')
-        if (functions[key].environmentSecrets) {
-          environments[functionName] = functions[key].environmentSecrets
+      // build options object
+      const options = Object.assign(
+        {
+          throwOnMissingSecret: false,
+          logOnMissingSecret: true,
+          skipValidation: false,
+          omitPermissions: false,
+          resourceForIamRole: '*'
+        },
+        _.get(this.serverless.service, 'custom.serverlessSecrets', {}),
+        {
+          provider: this.serverless.service.provider.name
         }
-        return environments
-      }, {})
+      )
 
-    environments.$global = this.serverless.service.provider.environmentSecrets || {}
+      this.serverless.cli.log('Generating Serverless Secrets Config environments')
+      const functions = this.serverless.service.functions
+      const environments = Object.keys(functions)
+        .reduce((environments, key) => {
+          const functionName = functions[key].name || [this.serverless.service.service, (this.serverless.processedInput.options.stage || 'dev'), key].join('-')
+          if (functions[key].environmentSecrets) {
+            environments[functionName] = functions[key].environmentSecrets
+          }
+          return environments
+        }, {})
 
-    return environments
+      environments.$global = this.serverless.service.provider.environmentSecrets || {}
+
+      this.config = {
+        options,
+        environments
+      }
+    }
+    
+    return this.config
+  }
+
+  generateConfig () {
+    return this.getConfig()
   }
 
   writeConfigFile () {
     this.serverless.cli.log(`Writing ${constants.CONFIG_FILE_NAME}`)
-    fs.writeFileSync(constants.CONFIG_FILE_NAME, JSON.stringify(this.config))
+    fs.writeFileSync(constants.CONFIG_FILE_NAME, JSON.stringify(this.getConfig()))
   }
 
   setAdditionalEnvironmentVariables () {
@@ -288,8 +288,9 @@ class ServerlessSecrets {
     this.serverless.cli.log('Adding environment variable placeholders for Serverless Secrets')
     const functions = this.serverless.service.functions
     Object.keys(functions).forEach(functionName => {
+      const fullName = functions[functionName].name || [this.serverless.service.service, (this.serverless.processedInput.options.stage || 'dev'), functionName].join('-')
       if (!functions[functionName].environment) functions[functionName].environment = {}
-      Object.assign(functions[functionName].environment, this.config.environments.$global, this.config.environments[functions[functionName].name])
+      Object.assign(functions[functionName].environment, this.getConfig().environments.$global, this.getConfig().environments[fullName])
     })
   }
 
@@ -303,11 +304,11 @@ class ServerlessSecrets {
       _.set(this.serverless.service, 'provider.iamRoleStatements', [])
       iamRoleStatements = _.get(this.serverless.service, 'provider.iamRoleStatements')
     }
-    if (!this.options.omitPermissions && !this.config.options.omitPermissions) {
+    if (!this.options.omitPermissions && !this.getConfig().options.omitPermissions) {
       iamRoleStatements.push({
         Effect: 'Allow',
         Action: 'ssm:GetParameters',
-        Resource: this.config.options.resourceForIamRole || '*' // todo make this enumerate the exact secrets
+        Resource: this.getConfig().options.resourceForIamRole || '*' // todo make this enumerate the exact secrets
       })
     }
   }
