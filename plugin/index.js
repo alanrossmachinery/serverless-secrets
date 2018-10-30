@@ -140,6 +140,14 @@ class ServerlessSecrets {
     }
   }
 
+  isEnabled () {
+    return _.get(this.serverless.service, 'custom.serverlessSecrets.enabled', true)
+  }
+
+  skipValidation () {
+    return this.options.skipValidation || this.config.options.skipValidation || _.get(this.serverless.service, 'custom.serverlessSecrets.skipValidation', false)
+  }
+
   setSecret () {
     let value
     if (this.options.file) {
@@ -197,11 +205,19 @@ class ServerlessSecrets {
   }
 
   cleanupPackageSecrets () {
+    if (!this.isEnabled()) {
+      return
+    }
+
     this.serverless.cli.log(`Cleaning up ${constants.CONFIG_FILE_NAME}`)
     if (fs.existsSync(constants.CONFIG_FILE_NAME)) fs.unlinkSync(constants.CONFIG_FILE_NAME)
   }
 
   packageSecrets () {
+    if (!this.isEnabled()) {
+      return
+    }
+
     this.deployMode = true
     this.serverless.cli.log('Serverless Secrets beginning packaging process')
     this.writeConfigFile()
@@ -278,6 +294,10 @@ class ServerlessSecrets {
   }
 
   setIamPermissions () {
+    if (!this.isEnabled()) {
+      return
+    }
+
     let iamRoleStatements = _.get(this.serverless.service, 'provider.iamRoleStatements', null)
     if (!iamRoleStatements) {
       _.set(this.serverless.service, 'provider.iamRoleStatements', [])
@@ -293,7 +313,7 @@ class ServerlessSecrets {
   }
 
   validateSecrets () {
-    if (this.deployMode && (this.options.skipValidation || this.config.options.skipValidation)) {
+    if (this.deployMode && this.skipValidation()) {
       return Promise.resolve()
     }
     this.serverless.cli.log('Validating secrets')
